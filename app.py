@@ -3,63 +3,17 @@ import os
 import logging
 import nltk
 from nltk.sentiment import SentimentIntensityAnalyzer
-from typing import Dict, Tuple, Optional, List
+from typing import Dict, Tuple, Optional
 import re
 from responses.response_generator import ResponseGenerator
 
 # Download required NLTK data
 nltk.download('vader_lexicon', quiet=True)
 
-class ConversationMemory:
-    def __init__(self, max_history: int = 5):
-        self.max_history = max_history
-        self.user_emotions: List[str] = []
-        self.machine_emotions: List[str] = []
-        self.user_inputs: List[str] = []
-        self.machine_responses: List[str] = []
-        self.default_emotion = 'calm'
-        
-    def add_interaction(self, user_input: str, user_emotion: str, 
-                       machine_response: str, machine_emotion: str):
-        """Add a new interaction to the conversation history."""
-        self.user_inputs.append(user_input)
-        self.user_emotions.append(user_emotion)
-        self.machine_responses.append(machine_response)
-        self.machine_emotions.append(machine_emotion)
-        
-        # Keep only the last max_history interactions
-        if len(self.user_inputs) > self.max_history:
-            self.user_inputs.pop(0)
-            self.user_emotions.pop(0)
-            self.machine_responses.pop(0)
-            self.machine_emotions.pop(0)
-    
-    def get_last_machine_emotion(self) -> str:
-        """Get the last machine emotion, or default if no history."""
-        return self.machine_emotions[-1] if self.machine_emotions else self.default_emotion
-    
-    def get_last_user_emotion(self) -> str:
-        """Get the last user emotion, or default if no history."""
-        return self.user_emotions[-1] if self.user_emotions else self.default_emotion
-    
-    def get_emotion_trend(self) -> str:
-        """Analyze the trend of emotions in the conversation."""
-        if not self.user_emotions:
-            return self.default_emotion
-            
-        # Count emotion occurrences
-        emotion_counts = {}
-        for emotion in self.user_emotions:
-            emotion_counts[emotion] = emotion_counts.get(emotion, 0) + 1
-            
-        # Find most common emotion
-        return max(emotion_counts.items(), key=lambda x: x[1])[0]
-
 class VaderSentimentAnalyzer:
     def __init__(self):
         self.sia = SentimentIntensityAnalyzer()
         self.response_generator = ResponseGenerator()
-        self.conversation_memory = ConversationMemory()
         
         # Punctuation patterns and their emotional impact
         self.punctuation_patterns = {
@@ -218,54 +172,8 @@ class VaderSentimentAnalyzer:
         
         return dominant_emotion, max_intensity
 
-    def _determine_machine_emotion(self, user_emotion: str, sentiment: Dict[str, float]) -> str:
-        """Determine machine's emotional response based on user emotion and sentiment."""
-        last_machine_emotion = self.conversation_memory.get_last_machine_emotion()
-        emotion_trend = self.conversation_memory.get_emotion_trend()
-        
-        # Base emotion on user's emotion and sentiment
-        if sentiment['compound'] >= 0.5:
-            base_category = 'positive'
-            emotions = self.emotions['positive']
-        elif sentiment['compound'] <= -0.5:
-            base_category = 'negative'
-            emotions = self.emotions['negative']
-        else:
-            base_category = 'neutral'
-            emotions = self.emotions['neutral']
-        
-        # Find closest matching emotion
-        closest_emotion = None
-        min_diff = float('inf')
-        
-        for emotion, thresholds in emotions.items():
-            diff = abs(sentiment['compound'] - thresholds['compound'])
-            if diff < min_diff:
-                min_diff = diff
-                closest_emotion = emotion
-        
-        # Adjust emotion based on conversation context
-        if user_emotion in ['sad', 'devastated', 'heartbroken']:
-            # Show empathy for negative emotions
-            return 'thoughtful'
-        elif user_emotion in ['ecstatic', 'excited', 'happy']:
-            # Mirror positive emotions
-            return 'excited'
-        elif user_emotion in ['angry', 'furious']:
-            # Stay calm in response to anger
-            return 'calm'
-        elif user_emotion in ['confused', 'puzzled']:
-            # Show understanding for confusion
-            return 'thoughtful'
-        elif emotion_trend == user_emotion:
-            # Mirror consistent emotional trends
-            return closest_emotion
-        else:
-            # Default to balanced response
-            return closest_emotion
-
-    def determine_emotion(self, text: str) -> Tuple[str, str]:
-        """Determine both user and machine emotions based on input and context."""
+    def determine_emotion(self, text: str) -> str:
+        """Determine emotion based on sentiment analysis, context, and punctuation."""
         # Get base sentiment scores
         sentiment = self.analyze_sentiment(text)
         
@@ -279,7 +187,7 @@ class VaderSentimentAnalyzer:
         # Analyze punctuation
         punctuation_emotion, punctuation_intensity = self._analyze_punctuation(text)
         
-        # Determine user's emotion
+        # Determine base emotion category
         if sentiment['compound'] >= 0.5:
             category = 'positive'
             emotions = self.emotions['positive']
@@ -298,24 +206,21 @@ class VaderSentimentAnalyzer:
                 category = 'neutral'
                 emotions = self.emotions['neutral']
         
-        # Find the closest matching emotion for user
-        user_emotion = None
+        # Find the closest matching emotion
+        closest_emotion = None
         min_diff = float('inf')
         
         for emotion, thresholds in emotions.items():
             diff = abs(sentiment['compound'] - thresholds['compound'])
             if diff < min_diff:
                 min_diff = diff
-                user_emotion = emotion
+                closest_emotion = emotion
         
-        # Adjust user emotion based on punctuation if it has a stronger impact
+        # Adjust emotion based on punctuation if it has a stronger impact
         if punctuation_emotion and punctuation_intensity > 1.2:
-            user_emotion = punctuation_emotion
+            closest_emotion = punctuation_emotion
         
-        # Determine machine's emotional response
-        machine_emotion = self._determine_machine_emotion(user_emotion, sentiment)
-        
-        return user_emotion, machine_emotion
+        return closest_emotion
 
 def main():
     # Configure logging
@@ -349,19 +254,14 @@ def main():
                 if not user_input:
                     continue
                 
-                # Analyze sentiment and determine emotions
-                user_emotion, machine_emotion = analyzer.determine_emotion(user_input)
+                # Analyze sentiment and determine emotion
+                emotion = analyzer.determine_emotion(user_input)
                 
                 # Generate response
-                response = analyzer.response_generator.generate_response(machine_emotion, user_input)
+                response = analyzer.response_generator.generate_response(emotion, user_input)
                 
-                # Store interaction in memory
-                analyzer.conversation_memory.add_interaction(
-                    user_input, user_emotion, response, machine_emotion
-                )
-                
-                # Print response with emotion tags
-                print(f"[User: {user_emotion}] [Machine: {machine_emotion}] {response}\n")
+                # Print response with emotion tag
+                print(f"[{emotion}] {response}\n")
                 
             except KeyboardInterrupt:
                 print("\nGoodbye! Have a great day!")
